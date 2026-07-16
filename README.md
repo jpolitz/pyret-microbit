@@ -92,8 +92,11 @@ consoles) — never the CLI.
 
 ## Gotchas
 
-- **One holder per serial port.** Close any other serial console (the MakeCode
-  or python editor's) before running the harness, or `connect()` fails/hangs.
+- **One holder per serial port.** Only one place can hold the USB port at once.
+  Close any *other tab running this demo* (a leftover localhost or hosted tab)
+  and any MakeCode/python.microbit.org serial console before you `connect()`, or
+  you'll get `Failed to execute 'open' on 'SerialPort'`. Unplug/replug the board
+  to force-release a stuck port.
 - **Reset on connect.** Opening the serial port pulses DTR and *resets* the
   board; the first samples arrive a moment after it reboots.
 - **Module caching.** After editing `microbit.js`, **reload the harness page** —
@@ -102,5 +105,6 @@ consoles) — never the CLI.
 
 ## Status
 
-USB-serial path is working end-to-end against production CPO. The Bluetooth path
-is written but not yet hardware-verified.
+USB-serial path is working end-to-end against production CPO, including from the
+public GitHub Pages deploy at <https://jpolitz.github.io/pyret-microbit/>. The
+Bluetooth path is written but not yet hardware-verified.
