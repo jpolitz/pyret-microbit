@@ -7,8 +7,12 @@
   html, body { height: 100%; margin: 0; font-family: sans-serif; }
   body { display: flex; flex-direction: column; }
   header { padding: 6px 12px; background: #222; color: #eee; font-size: 13px;
-           display: flex; gap: 16px; align-items: baseline; }
+           display: flex; flex-direction: column; gap: 4px; }
+  .hrow { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
   header code { color: #9ecbff; }
+  header a { color: #ffd479; text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  .muted { color: #aaa; }
   #frame-holder { flex: 1; min-height: 0; }
   iframe { width: 100%; height: 100%; border: 0; display: block; }
   #log { height: 110px; overflow-y: auto; background: #111; color: #8f8;
@@ -17,10 +21,24 @@
 </head>
 <body>
 <header>
-  <b>micro:bit ⟷ Pyret dev harness</b>
-  <span>serves <code>import js-file("/microbit")</code> from <code>./microbit.js</code>
-    (edit + reload page to pick up changes)</span>
-  <span id="cpo-note"></span>
+  <div class="hrow">
+    <b>micro:bit ⟷ Pyret</b>
+    <span class="muted">a live Pyret program reading a real micro:bit — running on production
+      <a href="https://code.pyret.org" target="_blank" rel="noopener">Horizon CPO</a>, not a mock</span>
+    <span id="cpo-note" class="muted"></span>
+  </div>
+  <div class="hrow">
+    <b>First time?</b>
+    <span>Flash your micro:bit with the streaming firmware —</span>
+    <a href="https://python.microbit.org" target="_blank" rel="noopener">MicroPython (USB) ↗</a>
+    <span class="muted">paste
+      <a href="https://github.com/jpolitz/pyret-microbit/blob/main/firmware/microbit-stream.py"
+         target="_blank" rel="noopener">microbit-stream.py</a></span>
+    <a href="https://makecode.microbit.org" target="_blank" rel="noopener">MakeCode (USB + Bluetooth) ↗</a>
+    <span class="muted">paste
+      <a href="https://github.com/jpolitz/pyret-microbit/blob/main/firmware/microbit-stream.ts"
+         target="_blank" rel="noopener">microbit-stream.ts</a></span>
+  </div>
 </header>
 <div id="frame-holder">
   <!-- allow= delegates Web Serial / Web Bluetooth into the (cross-origin) CPO frame -->
