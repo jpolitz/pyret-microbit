@@ -77,10 +77,36 @@ it plugged into USB *for power only* (don't open the serial port) and connect
 over Bluetooth. To fully cut the cord, power it from a USB charger / power bank,
 or a 2×AAA pack in the JST connector — no code change.
 
+## Multiple boards (2-player games, etc.)
+
+One page can hold several connections at once. Instead of the single-board
+`MB.connect()`, open a **named controller** per board — each returns an object
+you query independently:
+
+```
+p1 = MB.controller-bluetooth("p1")   # pick Player 1's board in the chooser
+p2 = MB.controller-bluetooth("p2")   # then Player 2's board
+p1.latest()        # this board's most recent sample
+p2.await-sample()  # controllers have the same methods as the single-board API
+```
+
+Reusing a name (`"p1"`) returns the existing connection, so re-running your
+program doesn't re-prompt. `MB.controller(name)` is the USB-serial variant.
+
+**Prefer Bluetooth for multiple boards:** micro:bits advertise unique names
+(`BBC micro:bit [xxxxx]`), so you can tell which one you're picking. Over serial,
+`getInfo()` exposes no per-board id, so multiple boards look identical in the
+chooser. Practical ceilings: the host Bluetooth adapter allows only a handful of
+concurrent connections (~4–7); USB is bounded by ports/hub power. Poll
+`.latest()` from a reactor `on-tick` rather than blocking on `.await-sample()`
+when reading several boards — you can't block-wait on more than one per tick.
+
 ## Examples
 
 - `examples/tilt-demo.arr` — a `reactor` that renders a little micro:bit
   banking and sliding around the screen, driven live by the accelerometer.
+- `examples/two-player-duel.arr` — a 2-player tilt game: each player tilts their
+  own board to push a puck toward the opponent's edge. Two named BLE controllers.
 
 ## ⚠️ Never touch the micro:bit from the terminal
 
