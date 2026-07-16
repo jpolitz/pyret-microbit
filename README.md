@@ -107,6 +107,9 @@ consoles) — never the CLI.
 
 ## Status
 
-USB-serial path is working end-to-end against production CPO, including from the
-public GitHub Pages deploy at <https://jpolitz.github.io/pyret-microbit/>. The
-Bluetooth path is written but not yet hardware-verified.
+Both transports are working end-to-end against production CPO from the public
+GitHub Pages deploy at <https://jpolitz.github.io/pyret-microbit/>:
+
+- **USB serial** — verified.
+- **Bluetooth LE** — verified, including fully cordless (micro:bit on a battery
+  pack, no USB to the computer).
