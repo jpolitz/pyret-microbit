@@ -4,8 +4,10 @@
 //
 // TO USE:
 //   1. New project at makecode.microbit.org, switch to JavaScript, paste this.
-//   2. Adding `bluetooth.*` auto-installs the Bluetooth extension (it will ask
-//      to remove the "radio" extension — allow it; they can't coexist).
+//   2. Add the Bluetooth extension: toolbox ▸ Extensions ▸ search "bluetooth"
+//      ▸ click the "bluetooth" tile. (Pasting JS does NOT auto-install it — you
+//      get "Cannot find name 'bluetooth'" until you do this.) It will ask to
+//      remove the "radio" extension — allow it; they can't coexist.
 //   3. Gear ▸ Project Settings ▸ set "No Pairing Required: Anyone can connect".
 //      (Web Bluetooth + JustWorks = no passkey dance on the LED grid.)
 //   4. Download ▸ flash via WebUSB. Board shows a heart when running.

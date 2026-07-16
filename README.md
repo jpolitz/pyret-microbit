@@ -61,8 +61,10 @@ BLE needs a different firmware — **MicroPython on the micro:bit can't do
 Bluetooth**, so you re-flash with MakeCode:
 
 1. At <https://makecode.microbit.org>, new project, switch to JavaScript, paste
-   `firmware/microbit-stream.ts`. Accept installing the Bluetooth extension
-   (it removes `radio`). This firmware streams over **both** USB serial and BLE.
+   `firmware/microbit-stream.ts`. Add the Bluetooth extension via **toolbox ▸
+   Extensions ▸ "bluetooth"** — pasting JS does *not* auto-add it, so until you
+   do you'll see "Cannot find name 'bluetooth'". Accept removing `radio` when
+   prompted. This firmware streams over **both** USB serial and BLE.
 2. **Gear ▸ Project Settings ▸ "No Pairing Required: Anyone can connect."**
    (Web Bluetooth + JustWorks = no passkey dance on the LED grid.)
 3. Download/flash over WebUSB.
