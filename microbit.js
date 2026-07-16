@@ -31,9 +31,13 @@
     const SAMPLE_TIMEOUT_MS = 10000;
 
     // Nordic UART Service (serial-over-BLE). The micro:bit's MakeCode
-    // "bluetooth uart" is exactly this profile.
+    // "bluetooth uart" is this profile — BUT the micro:bit SWAPS the two
+    // characteristic UUIDs relative to the standard Nordic assignment: its
+    // notify (device→browser) characteristic is 6e400002, and 6e400003 is the
+    // write (browser→device) one. Subscribing on 6e400003 throws
+    // "GATT Error: Not supported" because it has no notify property.
     const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
-    const NUS_TX_CHAR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // peripheral→browser, notify
+    const NUS_TX_CHAR = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // micro:bit → browser, notify
 
     function pyAwait(promise) {
       return runtime.pauseStack(function(restarter) {
