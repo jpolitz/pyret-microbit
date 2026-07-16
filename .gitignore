@@ -1,0 +1,4 @@
+.DS_Store
+*.log
+*.hex
+node_modules/

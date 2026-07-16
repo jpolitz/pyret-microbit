@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>micro:bit ⟷ Pyret dev harness</title>
+<style>
+  html, body { height: 100%; margin: 0; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 6px 12px; background: #222; color: #eee; font-size: 13px;
+           display: flex; gap: 16px; align-items: baseline; }
+  header code { color: #9ecbff; }
+  #frame-holder { flex: 1; min-height: 0; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  #log { height: 110px; overflow-y: auto; background: #111; color: #8f8;
+         font: 11px/1.5 monospace; padding: 4px 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <b>micro:bit ⟷ Pyret dev harness</b>
+  <span>serves <code>import js-file("/microbit")</code> from <code>./microbit.js</code>
+    (edit + reload page to pick up changes)</span>
+  <span id="cpo-note"></span>
+</header>
+<div id="frame-holder">
+  <!-- allow= delegates Web Serial / Web Bluetooth into the (cross-origin) CPO frame -->
+  <iframe id="cpo" allow="serial; bluetooth"></iframe>
+</div>
+<div id="log"></div>
+
+<script>
+// Point at any CPO deploy that speaks the embed protocol, e.g.
+//   index.html?cpo=http://localhost:5000/editor  for a local build.
+const params = new URLSearchParams(window.location.search);
+const CPO_URL = params.get("cpo") || "https://pyret-horizon.herokuapp.com/editor";
+document.getElementById("cpo-note").textContent = "CPO: " + CPO_URL;
+
+const INITIAL_PROGRAM = `use context starter2024
+import js-file("/microbit") as MB
+
+MB.connect()             # USB serial
+# MB.connect-bluetooth() # BLE Nordic UART (needs a MakeCode-flashed board)
+
+# Then try, in the interactions pane:
+#   MB.await-sample()
+#   MB.latest()
+#   MB.latest-line()
+#   MB.sample-count()
+#   MB.transport()
+`;
+
+const logEl = document.getElementById("log");
+function log(msg) {
+  logEl.textContent += msg + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// --- RPC implementations served to the embedded CPO ---------------------
+// js-file("/microbit") ends up calling (see builtin-modules.js getBuiltinLocator
+// and locators/jsfile.arr): path.resolve, fs.stat, fs.readFile on "/microbit.js".
+function isModulePath(p) {
+  return String(p).replace(/\\/g, "/").endsWith("/microbit.js");
+}
+
+const rpc = {
+  fs: {
+    readFile: async function(p) {
+      if (!isModulePath(p)) { throw new Error("ENOENT: no such file: " + p); }
+      const resp = await fetch("./microbit.js", { cache: "no-store" });
+      if (!resp.ok) { throw new Error("harness fetch of microbit.js failed: " + resp.status); }
+      // A plain string, not Uint8Array: the deployed CPO passes this value
+      // straight into the runtime, where a Uint8Array is a "Non Pyret value".
+      return await resp.text();
+    },
+    stat: async function(p) {
+      if (!isModulePath(p)) { throw new Error("ENOENT: no such file: " + p); }
+      return { mtime: 1, ctime: 1, size: 1, native: {} };
+    },
+    exists: async function(p) { return isModulePath(p); },
+    writeFile: async function(p) { throw new Error("read-only harness fs: " + p); },
+    createDir: async function(p) { throw new Error("read-only harness fs: " + p); },
+  },
+  path: {
+    join: function(...ps) { return ps.join("/").replace(/\/+/g, "/"); },
+    resolve: function(p) { return p.startsWith("/") ? p : "/" + p; },
+    basename: function(p) { return p.split("/").pop(); },
+    dirname: function(p) { const d = p.split("/").slice(0, -1).join("/"); return d || "/"; },
+    extname: function(p) {
+      const b = p.split("/").pop();
+      const i = b.lastIndexOf(".");
+      return i > 0 ? b.slice(i) : "";
+    },
+    relative: function(from, to) { return to; },
+    "is-absolute": function(p) { return p.startsWith("/"); },
+  },
+  process: {
+    cwd: function() { return "/"; }
+  }
+};
+
+// --- Embed protocol (minimal subset of embed/src/pyret.ts) ---------------
+const iframe = document.getElementById("cpo");
+let currentState = {
+  definitionsAtLastRun: false,
+  interactionsSinceLastRun: [],
+  editorContents: INITIAL_PROGRAM,
+  replContents: "",
+  messageNumber: 0
+};
+
+async function handleRpc(data) {
+  log("rpc: " + data.module + "." + data.method + "(" + JSON.stringify(data.args) + ")");
+  const mod = rpc[data.module];
+  const fn = mod && mod[data.method];
+  let response;
+  if (!fn) {
+    response = { resultType: "exception", exception: "Unknown method " + data.module + "." + data.method };
+  } else {
+    try {
+      response = { resultType: "value", result: await fn(...(data.args || [])) };
+    } catch (e) {
+      response = { resultType: "exception", exception: String(e) };
+    }
+  }
+  if (response.resultType === "exception") { log("  ↳ exception: " + response.exception); }
+  iframe.contentWindow.postMessage({
+    protocol: "pyret-rpc",
+    data: Object.assign({ type: "rpc-response", callbackId: data.callbackId }, response)
+  }, "*");
+}
+
+window.addEventListener("message", function(e) {
+  const d = e.data;
+  if (!d || typeof d !== "object" || e.source !== iframe.contentWindow) { return; }
+  if (d.protocol === "pyret-rpc") {
+    handleRpc(d.data).catch(function(err) { log("rpc handler error: " + err); });
+    return;
+  }
+  if (d.protocol !== "pyret") { return; }
+  log("pyret: " + (d.data && d.data.type));
+  if (d.data && d.data.type === "pyret-init") {
+    iframe.contentWindow.postMessage({ type: "gainControl" }, "*");
+    iframe.contentWindow.postMessage({
+      protocol: "pyret",
+      data: { type: "reset", state: JSON.stringify(currentState) }
+    }, "*");
+  } else if (d.state) {
+    currentState = typeof d.state === "string" ? JSON.parse(d.state) : d.state;
+  }
+});
+
+iframe.src = CPO_URL + "#footerStyle=hide&warnOnExit=false";
+log("harness up; loading " + CPO_URL);
+</script>
+</body>
+</html>
