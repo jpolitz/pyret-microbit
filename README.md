@@ -107,6 +107,11 @@ when reading several boards — you can't block-wait on more than one per tick.
   banking and sliding around the screen, driven live by the accelerometer.
 - `examples/two-player-duel.arr` — a 2-player tilt game: each player tilts their
   own board to push a puck toward the opponent's edge. Two named BLE controllers.
+- `examples/self-driving-tilt.arr` — steer Bootstrap's Self-Driving-Car
+  simulator by tilting a micro:bit. Passes a hand-driving function to the
+  library's `drive` (a `(Row -> Number)` returning a steering angle) that
+  ignores the ML sensors and returns tilt instead. A nice "drive it yourself
+  before you train a model" classroom warm-up.
 
 ## ⚠️ Never touch the micro:bit from the terminal
 
