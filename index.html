@@ -65,6 +65,16 @@ MB.connect()             # USB serial
 #   MB.latest-line()
 #   MB.sample-count()
 #   MB.transport()
+
+# You can also try
+# MB.show-text("hi Ray")        # scroll text
+# MB.show-leds([list:           # 5×5 grid: 0 (off) to 9 (brightest), or true/false
+#  [list: 0, 9, 0, 9, 0],
+#  [list: 9, 9, 9, 9, 9],
+#  [list: 9, 9, 9, 9, 9],
+#  [list: 0, 9, 9, 9, 0],
+#  [list: 0, 0, 9, 0, 0]])
+# MB.clear-leds()
 `;
 
 const logEl = document.getElementById("log");
