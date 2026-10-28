@@ -80,10 +80,30 @@ function isModulePath(p) {
   return String(p).replace(/\\/g, "/").endsWith("/microbit.js");
 }
 
+// The method names CPO sends live in code.pyret.org's
+// src/web/js/trove/filesystem-internal.js — check there when CPO changes.
+// Its exists() is stat() + "does the error mention EntryNotFound?" (ZenFS's
+// error code), so missing files must throw with that text.
+function notFound(p) { return new Error("EntryNotFound: no such file: " + p); }
+
+// POSIX-style path.resolve over any number of segments, cwd "/".
+function resolvePath(...ps) {
+  let out = [];
+  for (const p of ps) {
+    const s = String(p);
+    if (s.startsWith("/")) { out = []; }
+    for (const part of s.split("/")) {
+      if (part === "" || part === ".") { continue; }
+      if (part === "..") { out.pop(); } else { out.push(part); }
+    }
+  }
+  return "/" + out.join("/");
+}
+
 const rpc = {
   fs: {
     readFile: async function(p) {
-      if (!isModulePath(p)) { throw new Error("ENOENT: no such file: " + p); }
+      if (!isModulePath(p)) { throw notFound(p); }
       const resp = await fetch("./microbit.js", { cache: "no-store" });
       if (!resp.ok) { throw new Error("harness fetch of microbit.js failed: " + resp.status); }
       // A plain string, not Uint8Array: the deployed CPO passes this value
@@ -91,7 +111,7 @@ const rpc = {
       return await resp.text();
     },
     stat: async function(p) {
-      if (!isModulePath(p)) { throw new Error("ENOENT: no such file: " + p); }
+      if (!isModulePath(p)) { throw notFound(p); }
       return { mtime: 1, ctime: 1, size: 1, native: {} };
     },
     exists: async function(p) { return isModulePath(p); },
@@ -100,7 +120,7 @@ const rpc = {
   },
   path: {
     join: function(...ps) { return ps.join("/").replace(/\/+/g, "/"); },
-    resolve: function(p) { return p.startsWith("/") ? p : "/" + p; },
+    resolve: function(...ps) { return resolvePath(...ps); },
     basename: function(p) { return p.split("/").pop(); },
     dirname: function(p) { const d = p.split("/").slice(0, -1).join("/"); return d || "/"; },
     extname: function(p) {
@@ -109,7 +129,10 @@ const rpc = {
       return i > 0 ? b.slice(i) : "";
     },
     relative: function(from, to) { return to; },
-    "is-absolute": function(p) { return p.startsWith("/"); },
+    // Current CPO sends isAbsolute; older deploys and embed's default-rpcs
+    // use is-absolute. Serve both.
+    isAbsolute: function(p) { return String(p).startsWith("/"); },
+    "is-absolute": function(p) { return String(p).startsWith("/"); },
   },
   process: {
     cwd: function() { return "/"; }
