@@ -55,6 +55,31 @@ MB.is-connected()
 MB.disconnect()
 ```
 
+## Drawing on the LEDs
+
+Pyret can also write to the board's 5×5 LED grid (both transports; boards
+flashed before this was added need the current firmware re-flashed):
+
+```
+MB.show-text("hi")          # scroll text
+MB.show-leds([list:         # 5 rows of 5: brightness 0 (off)..9, or true/false
+  [list: 0, 9, 0, 9, 0],
+  [list: 9, 9, 9, 9, 9],
+  [list: 9, 9, 9, 9, 9],
+  [list: 0, 9, 9, 9, 0],
+  [list: 0, 0, 9, 0, 0]])
+MB.clear-leds()
+```
+
+Controllers have the same methods (`p1.show-leds(...)`). The calls don't
+block, so it's fine to call `show-leds` every tick from a reactor: unsent frames
+are coalesced to the newest one, and a frame identical to the last is skipped.
+Over USB, a command sent right after `connect()` can be lost while the board
+reboots (see "Reset on connect" below).
+
+Wire protocol (host → board, one line per command): `T:<text>` scrolls text;
+`L:<25 digits>` sets brightness row-major.
+
 ## Going wireless (Bluetooth)
 
 BLE needs a different firmware — **MicroPython on the micro:bit can't do

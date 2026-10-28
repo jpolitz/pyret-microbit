@@ -12,6 +12,10 @@
       'latest': ["arrow", [], "Any"],
       'await-sample': ["arrow", [], "Any"],
       'sample-count': ["arrow", [], "Number"],
+      // Output to the board's 5x5 LED grid (needs the two-way firmware).
+      'show-text': ["arrow", ["String"], "Nothing"],
+      'show-leds': ["arrow", ["Any"], "Nothing"],
+      'clear-leds': ["arrow", [], "Nothing"],
       // Multi-board API: each returns a controller object bound to a named
       // connection. Reusing the same name returns the existing connection
       // (no re-prompt across program re-runs).
@@ -36,15 +40,18 @@
     // write-only. Subscribing on 6e400003 throws "GATT Error: Not supported".
     const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
     const NUS_TX_CHAR = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // micro:bit → browser, notify
+    const NUS_RX_CHAR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // browser → micro:bit, write
+    const BLE_CHUNK = 20; // default ATT MTU payload; the firmware reassembles lines
 
     function getRecord(name) {
       if (!G.byName[name]) {
         G.byName[name] = {
           name: name, transport: null,
-          port: null, reader: null,      // serial
-          device: null, txChar: null,    // bluetooth
+          port: null, reader: null, writer: null,  // serial
+          device: null, txChar: null, rxChar: null, // bluetooth
           connected: false,
           lastLine: "", lastSample: null, count: 0, waiters: [],
+          outQueue: [], sending: false, lastFrame: null,
         };
       }
       return G.byName[name];
@@ -93,8 +100,12 @@
       rec.transport = null;
       rec.port = null;
       rec.reader = null;
+      rec.writer = null;
       rec.device = null;
       rec.txChar = null;
+      rec.rxChar = null;
+      rec.outQueue = [];
+      rec.lastFrame = null;
       const ws = rec.waiters;
       rec.waiters = [];
       ws.forEach(function(w) { w.reject(new Error(why)); });
@@ -207,6 +218,7 @@
       await txChar.startNotifications();
       rec.device = device;
       rec.txChar = txChar;
+      rec.rxChar = await service.getCharacteristic(NUS_RX_CHAR);
       rec.transport = "bluetooth";
       rec.connected = true;
       resetSampleState(rec);
@@ -216,6 +228,7 @@
     async function disconnectRec(rec) {
       if (rec.transport === "serial") {
         if (rec.reader) { try { await rec.reader.cancel(); } catch (e) {} }
+        if (rec.writer) { try { rec.writer.releaseLock(); } catch (e) {} }
         if (rec.port) { try { await rec.port.close(); } catch (e) {} }
       } else if (rec.transport === "bluetooth") {
         if (rec.txChar) { try { await rec.txChar.stopNotifications(); } catch (e) {} }
@@ -240,6 +253,99 @@
         }, SAMPLE_TIMEOUT_MS);
       });
     }
+
+    // --- output: host → board commands -----------------------------------
+    // One newline-terminated line per command (see firmware/):
+    //   T:<text>                scroll text
+    //   L:<25 digits 0-9>       set every LED's brightness, row-major
+    // Writes are fire-and-forget so they're cheap to call from a reactor's
+    // on-tick/to-draw. LED frames coalesce (only the newest unsent one is
+    // kept) and a frame identical to the last one sent is skipped.
+    async function writeLine(rec, text) {
+      const bytes = new TextEncoder().encode(text + "\n");
+      if (rec.transport === "serial") {
+        if (!rec.writer) { rec.writer = rec.port.writable.getWriter(); }
+        await rec.writer.write(bytes);
+      } else if (rec.transport === "bluetooth") {
+        // GATT allows one operation at a time; the queue keeps these serial.
+        for (let i = 0; i < bytes.length; i += BLE_CHUNK) {
+          await rec.rxChar.writeValue(bytes.slice(i, i + BLE_CHUNK));
+        }
+      }
+    }
+
+    async function pumpOut(rec) {
+      if (rec.sending) { return; }
+      rec.sending = true;
+      try {
+        while (rec.connected && rec.outQueue.length > 0) {
+          const line = rec.outQueue.shift();
+          if (line.startsWith("L:")) {
+            if (line === rec.lastFrame) { continue; }
+            rec.lastFrame = line;
+          } else {
+            rec.lastFrame = null; // text scrolling overwrites the grid
+          }
+          await writeLine(rec, line);
+        }
+      } catch (e) {
+        console.error("micro:bit write error:", e);
+        rec.outQueue = [];
+      } finally {
+        rec.sending = false;
+      }
+    }
+
+    function sendCommand(rec, line) {
+      if (!rec.connected) {
+        throw runtime.throwMessageException(
+          "micro:bit \"" + rec.name + "\" is not connected");
+      }
+      const q = rec.outQueue;
+      if (line.startsWith("L:") && q.length > 0 && q[q.length - 1].startsWith("L:")) {
+        q[q.length - 1] = line;
+      } else {
+        q.push(line);
+      }
+      pumpOut(rec);
+      return runtime.nothing;
+    }
+
+    function textCommand(s) {
+      if (!runtime.isString(s)) {
+        throw runtime.throwMessageException("show-text expects a String");
+      }
+      return "T:" + s.replace(/[\r\n]+/g, " ");
+    }
+
+    // rows: List<List<Number|Boolean>>, 5x5. Numbers are brightness 0-9
+    // (clamped, rounded); true/false mean 9/0.
+    function ledCommand(rows) {
+      function bad() {
+        throw runtime.throwMessageException(
+          "show-leds expects a list of 5 rows, each a list of 5 numbers " +
+          "from 0 (off) to 9 (brightest), or Booleans");
+      }
+      if (!runtime.ffi.isList(rows)) { bad(); }
+      const rs = runtime.ffi.toArray(rows);
+      if (rs.length !== 5) { bad(); }
+      let digits = "";
+      rs.forEach(function(row) {
+        if (!runtime.ffi.isList(row)) { bad(); }
+        const cs = runtime.ffi.toArray(row);
+        if (cs.length !== 5) { bad(); }
+        cs.forEach(function(c) {
+          let v;
+          if (runtime.isBoolean(c)) { v = runtime.isPyretTrue(c) ? 9 : 0; }
+          else if (runtime.isNumber(c)) { v = Math.round(runtime.num_to_fixnum(c)); }
+          else { bad(); }
+          digits += String(Math.max(0, Math.min(9, v)));
+        });
+      });
+      return "L:" + digits;
+    }
+
+    const CLEAR_COMMAND = "L:" + "0".repeat(25);
 
     function mkNumList(arr) {
       return runtime.ffi.makeList(arr.map(function(n) { return runtime.makeNumber(n); }));
@@ -280,6 +386,18 @@
           runtime.checkArity(0, arguments, "disconnect", false);
           return pyAwait(disconnectRec(rec));
         }, "disconnect"),
+        "show-text": runtime.makeFunction(function(s) {
+          runtime.checkArity(1, arguments, "show-text", false);
+          return sendCommand(rec, textCommand(s));
+        }, "show-text"),
+        "show-leds": runtime.makeFunction(function(rows) {
+          runtime.checkArity(1, arguments, "show-leds", false);
+          return sendCommand(rec, ledCommand(rows));
+        }, "show-leds"),
+        "clear-leds": runtime.makeFunction(function() {
+          runtime.checkArity(0, arguments, "clear-leds", false);
+          return sendCommand(rec, CLEAR_COMMAND);
+        }, "clear-leds"),
       });
     }
 
@@ -322,6 +440,18 @@
         runtime.checkArity(0, arguments, "sample-count", false);
         return runtime.makeNumber(getRecord(DEFAULT).count);
       }, "sample-count"),
+      "show-text": runtime.makeFunction(function(s) {
+        runtime.checkArity(1, arguments, "show-text", false);
+        return sendCommand(getRecord(DEFAULT), textCommand(s));
+      }, "show-text"),
+      "show-leds": runtime.makeFunction(function(rows) {
+        runtime.checkArity(1, arguments, "show-leds", false);
+        return sendCommand(getRecord(DEFAULT), ledCommand(rows));
+      }, "show-leds"),
+      "clear-leds": runtime.makeFunction(function() {
+        runtime.checkArity(0, arguments, "clear-leds", false);
+        return sendCommand(getRecord(DEFAULT), CLEAR_COMMAND);
+      }, "clear-leds"),
 
       // --- multi-board (named controllers) ---
       "controller": runtime.makeFunction(function(name) {

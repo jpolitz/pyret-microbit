@@ -14,9 +14,31 @@
 //
 // The USB `serial.writeLine` path keeps the existing js-file/Web Serial harness
 // working unchanged; `bluetooth.uartWriteLine` adds the BLE path.
+//
+// It also listens (on both transports) for newline-terminated commands:
+//   T:<text>            scroll text
+//   L:<25 digits 0-9>   set every LED's brightness, row-major
 
 bluetooth.startUartService()
 basic.showIcon(IconNames.Heart)
+
+function handleCommand(cmd: string) {
+    if (cmd.substr(0, 2) == "T:") {
+        basic.showString(cmd.substr(2))
+    } else if (cmd.substr(0, 2) == "L:" && cmd.length >= 27) {
+        for (let i = 0; i < 25; i++) {
+            const d = parseInt(cmd.charAt(2 + i))
+            led.plotBrightness(i % 5, Math.idiv(i, 5), Math.idiv(d * 255, 9))
+        }
+    }
+}
+
+serial.onDataReceived(serial.delimiters(Delimiters.NewLine), function () {
+    handleCommand(serial.readUntil(serial.delimiters(Delimiters.NewLine)))
+})
+bluetooth.onUartDataReceived(serial.delimiters(Delimiters.NewLine), function () {
+    handleCommand(bluetooth.uartReadUntil(serial.delimiters(Delimiters.NewLine)))
+})
 
 basic.forever(function () {
     const line =
