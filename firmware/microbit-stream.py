@@ -4,7 +4,10 @@
 # and listens for newline-terminated commands from Pyret:
 #   T:<text>            scroll text
 #   L:<25 digits 0-9>   set every LED's brightness, row-major
+#   P:<hz>              hold a pitch on the speaker; P:0 is silence
+#   N:<hz>,<ms>         play one note
 from microbit import *
+import music
 
 display.show(Image.HEART)
 
@@ -18,6 +21,15 @@ def handle(cmd):
     elif cmd.startswith("L:") and len(cmd) >= 27:
         d = cmd[2:27]
         display.show(Image(":".join(d[r * 5:r * 5 + 5] for r in range(5))))
+    elif cmd.startswith("P:"):
+        hz = int(cmd[2:])
+        if hz > 0:
+            music.pitch(hz, -1, wait=False)
+        else:
+            music.stop()
+    elif cmd.startswith("N:"):
+        hz, ms = cmd[2:].split(",")
+        music.pitch(int(hz), int(ms), wait=False)
 
 
 next_sample = running_time()

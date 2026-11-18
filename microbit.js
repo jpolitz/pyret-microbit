@@ -1,7 +1,40 @@
+// Needs a Pyret build with reactor event sources and sinks
+// (jpolitz/pyret-lang@reactor-custom-events). It does not load on a CPO
+// without them: the types below name builtin://reactors' EventSource and
+// EventSink.
 ({
-  requires: [],
+  requires: [
+    { "import-type": "builtin", "name": "reactors" }
+  ],
   provides: {
+    shorthands: {
+      "EventSource": { tag: "name",
+                       origin: { "import-type": "uri", uri: "builtin://reactors" },
+                       name: "EventSource" },
+      "EventSink": { tag: "name",
+                     origin: { "import-type": "uri", uri: "builtin://reactors" },
+                     name: "EventSink" },
+      "List": { tag: "name",
+                origin: { "import-type": "uri", uri: "builtin://lists" },
+                name: "List" }
+    },
     values: {
+      // Event sources for reactors, from the default connection's samples:
+      //   on(MB.button-a): lam(w, b): ... end
+      'button-a': ["tyapp", "EventSource", ["String"]],   // "a", each time A is pressed
+      'button-b': ["tyapp", "EventSource", ["String"]],   // "b", each time B is pressed
+      'buttons': ["tyapp", "EventSource", ["String"]],    // "a" or "b", either press
+      'tilt': ["tyapp", "EventSource", ["Any"]],          // {x, y, z} in milli-g, when it moves
+      'temperature': ["tyapp", "EventSource", ["Number"]],// degrees C, when it changes
+      'light': ["tyapp", "EventSource", ["Number"]],      // light level 0-255, when it changes
+      'sample': ["tyapp", "EventSource", [["tyapp", "List", ["Number"]]]], // every raw sample
+      // Event sinks:
+      //   to(MB.leds): lam(w): <5x5 grid, or a String to scroll> end
+      //   to(MB.speaker): lam(w): <pitch in Hz, 0 for silence> end
+      //   on-to(MB.button-a, MB.speaker): lam(w, b): {w; MB.note(440, 200)} end
+      'leds': ["tyapp", "EventSink", ["Any"]],
+      'speaker': ["tyapp", "EventSink", ["Any"]],
+      'note': ["arrow", ["Number", "Number"], "Any"],
       // Single-board convenience API (operates on one default connection).
       'connect': ["arrow", [], "String"],
       'connect-bluetooth': ["arrow", [], "String"],
@@ -25,7 +58,8 @@
     types: {}
   },
   nativeRequires: [],
-  theModule: function(runtime, _, uri) {
+  theModule: function(runtime, _, uri, reactors) {
+    const Reactors = runtime.getField(reactors, "internal");
     // All connections live on window, keyed by name, so program re-runs reuse
     // open ports/devices instead of reconnecting. Each record holds one board.
     const G = window.__pyretMicrobit = window.__pyretMicrobit || {};
@@ -50,7 +84,7 @@
           port: null, reader: null, writer: null,  // serial
           device: null, txChar: null, rxChar: null, // bluetooth
           connected: false,
-          lastLine: "", lastSample: null, count: 0, waiters: [],
+          lastLine: "", lastSample: null, count: 0, waiters: [], listeners: [],
           outQueue: [], sending: false, lastFrame: null,
         };
       }
@@ -78,6 +112,9 @@
         const ws = rec.waiters;
         rec.waiters = [];
         ws.forEach(function(w) { w.resolve(nums); });
+        rec.listeners.slice().forEach(function(l) {
+          try { l(nums); } catch (e) { console.error("micro:bit event listener error:", e); }
+        });
       }
     }
 
@@ -283,7 +320,7 @@
           if (line.startsWith("L:")) {
             if (line === rec.lastFrame) { continue; }
             rec.lastFrame = line;
-          } else {
+          } else if (line.startsWith("T:")) {
             rec.lastFrame = null; // text scrolling overwrites the grid
           }
           await writeLine(rec, line);
@@ -302,7 +339,10 @@
           "micro:bit \"" + rec.name + "\" is not connected");
       }
       const q = rec.outQueue;
-      if (line.startsWith("L:") && q.length > 0 && q[q.length - 1].startsWith("L:")) {
+      // LED frames and held pitches coalesce: only the newest unsent one of
+      // each kind matters. Notes and text always go out.
+      const kind = line.slice(0, 2);
+      if ((kind === "L:" || kind === "P:") && q.length > 0 && q[q.length - 1].startsWith(kind)) {
         q[q.length - 1] = line;
       } else {
         q.push(line);
@@ -351,9 +391,204 @@
       return runtime.ffi.makeList(arr.map(function(n) { return runtime.makeNumber(n); }));
     }
 
+    // --- reactor event sources -------------------------------------------
+    // Sample layout: ax, ay, az, temperatureC, lightLevel, buttonA, buttonB.
+    // Each source adds a listener to the record's sample stream while a
+    // reactor is interacting and removes it when the reactor stops. `derive`
+    // gets (sample, previous sample seen by this listener or null) and returns
+    // a Pyret value to emit, or undefined to stay quiet. Because `prev` starts
+    // null, the first sample after a reactor starts reports the current
+    // tilt/temperature/light.
+    function sampleSource(rec, name, derive) {
+      return Reactors.makeEventSource(name, function(emit) {
+        let prev = null;
+        const listener = function(nums) {
+          const v = derive(nums, prev);
+          prev = nums;
+          if (v !== undefined) { emit(v); }
+        };
+        rec.listeners.push(listener);
+        return function() {
+          rec.listeners = rec.listeners.filter(function(l) { return l !== listener; });
+        };
+      });
+    }
+
+    const TILT_THRESHOLD = 40; // milli-g; ignore accelerometer noise
+
+    function changedAt(i) {
+      return function(nums, prev) {
+        if (nums.length <= i) { return undefined; }
+        if (prev && prev.length > i && prev[i] === nums[i]) { return undefined; }
+        return runtime.makeNumber(nums[i]);
+      };
+    }
+
+    // Fires on the press (0 -> 1), not the release. A button already held
+    // when the reactor starts counts as a press.
+    function pressedAt(i, label) {
+      return function(nums, prev) {
+        if (nums.length <= i || nums[i] !== 1) { return undefined; }
+        if (prev && prev.length > i && prev[i] === 1) { return undefined; }
+        return runtime.makeString(label);
+      };
+    }
+
+    function makeSources(rec) {
+      const pressA = pressedAt(5, "a");
+      const pressB = pressedAt(6, "b");
+      const label = function(s) { return rec.name === DEFAULT ? s : rec.name + " " + s; };
+      return {
+        "button-a": sampleSource(rec, label("button-a"), pressA),
+        "button-b": sampleSource(rec, label("button-b"), pressB),
+        // Both pressed in the same sample: report "a" (a sample is one event).
+        "buttons": sampleSource(rec, label("buttons"), function(nums, prev) {
+          const a = pressA(nums, prev);
+          return a !== undefined ? a : pressB(nums, prev);
+        }),
+        "tilt": sampleSource(rec, label("tilt"), function(nums, prev) {
+          if (nums.length < 3) { return undefined; }
+          if (prev && prev.length >= 3 &&
+              Math.abs(nums[0] - prev[0]) < TILT_THRESHOLD &&
+              Math.abs(nums[1] - prev[1]) < TILT_THRESHOLD &&
+              Math.abs(nums[2] - prev[2]) < TILT_THRESHOLD) { return undefined; }
+          return runtime.makeObject({
+            x: runtime.makeNumber(nums[0]),
+            y: runtime.makeNumber(nums[1]),
+            z: runtime.makeNumber(nums[2]),
+          });
+        }),
+        "temperature": sampleSource(rec, label("temperature"), changedAt(3)),
+        "light": sampleSource(rec, label("light"), changedAt(4)),
+        "sample": sampleSource(rec, label("sample"), function(nums) { return mkNumList(nums); }),
+      };
+    }
+
+    // --- reactor event sinks ---------------------------------------------
+    // Reactors sends to a `to` sink after every transition, unchanged or not,
+    // so these sinks act only when the message changes (LED frames are also
+    // deduped in pumpOut). Errors are thrown as JS Errors: send runs outside
+    // any Pyret run, and a throw ends the interaction with its message.
+    function requireConnected(rec, sinkName) {
+      if (!rec.connected) {
+        throw new Error("micro:bit \"" + rec.name + "\" is not connected, so " + sinkName +
+          " can't send. Call MB.connect() (or MB.connect-bluetooth()) before r.interact().");
+      }
+    }
+
+    function unwrapOption(m) {
+      if (runtime.ffi.isNone(m)) { return null; }
+      if (runtime.ffi.isSome(m)) { return runtime.getField(m, "value"); }
+      return m;
+    }
+
+    function asJsError(f) {
+      try { return f(); }
+      catch (e) {
+        if (e instanceof Error) { throw e; }
+        // throwMessageException's Pyret error: pull its message out.
+        let msg = "micro:bit error";
+        try { msg = runtime.getField(e.exn, "message"); } catch (_) {}
+        throw new Error(String(msg));
+      }
+    }
+
+    // MB.leds accepts a 5x5 grid (List<List<Number|Boolean>>, as show-leds),
+    // a String to scroll (re-scrolled only when it changes), or an Option of
+    // either (none leaves the display alone).
+    function makeLedSink(rec) {
+      return Reactors.makeEventSink(rec.name === DEFAULT ? "leds" : rec.name + " leds", function() {
+        let lastText = null;
+        return {
+          send: function(message) {
+            const m = unwrapOption(message);
+            if (m === null) { return; }
+            requireConnected(rec, "MB.leds");
+            if (runtime.isString(m)) {
+              if (m === lastText) { return; }
+              lastText = m;
+              asJsError(function() { sendCommand(rec, textCommand(m)); });
+            } else {
+              lastText = null;
+              asJsError(function() { sendCommand(rec, ledCommand(m)); });
+            }
+          }
+        };
+      });
+    }
+
+    function isNote(m) {
+      return runtime.isObject(m) && !runtime.isDataValue(m) &&
+        runtime.hasField(m, "pitch") && runtime.hasField(m, "ms");
+    }
+
+    function toHz(n, what) {
+      if (!runtime.isNumber(n)) {
+        throw new Error("MB.speaker expects " + what + " to be a Number, got " +
+          runtime.toReprJS(n, runtime.ReprMethods._torepr));
+      }
+      return Math.max(0, Math.round(runtime.num_to_fixnum(n)));
+    }
+
+    // MB.speaker accepts
+    //   a Number     hold that pitch in Hz until a different one is sent; 0 is silence
+    //   MB.note(hz, ms)  play one note (every time it is sent; meant for on-to)
+    //   none / some(either of the above)   none leaves the speaker alone
+    // The speaker goes quiet when the reactor stops.
+    function makeSpeakerSink(rec) {
+      return Reactors.makeEventSink(rec.name === DEFAULT ? "speaker" : rec.name + " speaker", function() {
+        let held = 0;
+        return {
+          send: function(message) {
+            const m = unwrapOption(message);
+            if (m === null) { return; }
+            requireConnected(rec, "MB.speaker");
+            if (isNote(m)) {
+              const hz = toHz(runtime.getField(m, "pitch"), "a note's pitch");
+              const ms = toHz(runtime.getField(m, "ms"), "a note's length");
+              held = 0;
+              asJsError(function() { sendCommand(rec, "N:" + hz + "," + ms); });
+            } else {
+              const hz = toHz(m, "the pitch");
+              if (hz === held) { return; }
+              held = hz;
+              asJsError(function() { sendCommand(rec, "P:" + hz); });
+            }
+          },
+          close: function() {
+            if (held !== 0 && rec.connected) {
+              held = 0;
+              try { sendCommand(rec, "P:0"); } catch (e) {}
+            }
+          }
+        };
+      });
+    }
+
+    function sourcesAndSinks(rec) {
+      if (!rec.events) {
+        const s = makeSources(rec);
+        s.leds = makeLedSink(rec);
+        s.speaker = makeSpeakerSink(rec);
+        rec.events = s;
+      }
+      return rec.events;
+    }
+
     // A Pyret object bound to one connection: ctrl.latest(), ctrl.await-sample(), ...
+    // Its event sources and sinks are fields: on(p1.button-a), to(p1.leds).
     function makeController(rec) {
+      const ev = sourcesAndSinks(rec);
       return runtime.makeObject({
+        "button-a": ev["button-a"],
+        "button-b": ev["button-b"],
+        "buttons": ev.buttons,
+        "tilt": ev.tilt,
+        "temperature": ev.temperature,
+        "light": ev.light,
+        "sample": ev.sample,
+        "leds": ev.leds,
+        "speaker": ev.speaker,
         "name": runtime.makeFunction(function() {
           runtime.checkArity(0, arguments, "name", false);
           return runtime.makeString(rec.name);
@@ -402,7 +637,25 @@
     }
 
     const DEFAULT = "default";
+    const ev = sourcesAndSinks(getRecord(DEFAULT));
     const vals = {
+      // --- reactor event sources and sinks (default connection) ---
+      "button-a": ev["button-a"],
+      "button-b": ev["button-b"],
+      "buttons": ev.buttons,
+      "tilt": ev.tilt,
+      "temperature": ev.temperature,
+      "light": ev.light,
+      "sample": ev.sample,
+      "leds": ev.leds,
+      "speaker": ev.speaker,
+      "note": runtime.makeFunction(function(pitch, ms) {
+        runtime.checkArity(2, arguments, "note", false);
+        runtime.checkNumber(pitch);
+        runtime.checkNumber(ms);
+        return runtime.makeObject({ pitch: pitch, ms: ms });
+      }, "note"),
+
       // --- single-board convenience (default connection) ---
       "connect": runtime.makeFunction(function() {
         runtime.checkArity(0, arguments, "connect", false);

@@ -18,6 +18,8 @@
 // It also listens (on both transports) for newline-terminated commands:
 //   T:<text>            scroll text
 //   L:<25 digits 0-9>   set every LED's brightness, row-major
+//   P:<hz>              hold a pitch on the speaker; P:0 is silence
+//   N:<hz>,<ms>         play one note
 
 bluetooth.startUartService()
 basic.showIcon(IconNames.Heart)
@@ -30,6 +32,21 @@ function handleCommand(cmd: string) {
             const d = parseInt(cmd.charAt(2 + i))
             led.plotBrightness(i % 5, Math.idiv(i, 5), Math.idiv(d * 255, 9))
         }
+    } else if (cmd.substr(0, 2) == "P:") {
+        const hz = parseInt(cmd.substr(2))
+        if (hz > 0) {
+            music.ringTone(hz)
+        } else {
+            music.rest(1)
+        }
+    } else if (cmd.substr(0, 2) == "N:") {
+        const parts = cmd.substr(2).split(",")
+        const hz = parseInt(parts[0])
+        const ms = parseInt(parts[1])
+        // playTone blocks; run it off the command handler.
+        control.inBackground(function () {
+            music.playTone(hz, ms)
+        })
     }
 }
 
